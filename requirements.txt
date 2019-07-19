@@ -1,0 +1,17 @@
+pathlib2
+wheel
+pygame
+matplotlib
+
+python-dev
+gtk
+gstreamer
+gstreamer-plugins-base
+glut
+libwebkitgtk
+libjpeg
+libpng
+libtiff
+libsdl
+libnotify
+libsm
