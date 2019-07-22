@@ -4,10 +4,16 @@ import sys,os
 sys.path.append(os.getcwd())
 from Stepper.tools import configwriter
 import wx
+from wxasync import StartCoroutine
+from time import sleep
 
 from plotter import Plotter
-from threading import Thread
+from threading import Thread, Lock
 from queue import Queue
+import asyncio
+from events import CloseEvent, EVT_CLS
+
+from statistics import mean
 
 manually_moved = False
 
@@ -18,6 +24,8 @@ class MainWindow(wx.Frame):
         self.management = management
         self.startpanel = StartPanel(self)
 
+
+
         #set up menus
         filemenu= wx.Menu()
         menuAbout= filemenu.Append(wx.ID_ABOUT, "&About"," Information about this program")
@@ -27,6 +35,7 @@ class MainWindow(wx.Frame):
         editmenu = wx.Menu()
         motorconfig = editmenu.Append(wx.ID_ANY,"&Motor Configuration", "Configure Motor")
         config = editmenu.Append(wx.ID_EXECUTE,"&Preferences", "set Preferences")
+        calibrate = editmenu.Append(wx.ID_ANY,"&Calibrate", "Calibrate Force Sensor")
         #set up the menubar
         menubar = wx.MenuBar()
         menubar.Append(filemenu,"&File")
@@ -39,10 +48,17 @@ class MainWindow(wx.Frame):
         self.Bind(wx.EVT_MENU, self.OnAbout, menuAbout)
 
         self.Bind(wx.EVT_MENU, self.OnMotorConf, motorconfig)
+        self.Bind(wx.EVT_MENU, self.OnCalibrate, calibrate)
         self.Bind(wx.EVT_MENU, self.OnConf, config)
+        self.exp_panel = ExperimentPanel(self)
 
         #show the frame
+        self.startpanel.Layout()
+        self.startpanel.Show()
         self.Show()
+
+    def OnCalibrate(self,e):
+        dlg = FSCalibrate(self)
 
 
     def OnAbout(self, e):
@@ -74,68 +90,102 @@ class MainWindow(wx.Frame):
             self.startpanel.manual_panel.deactivate()
 
 
-        self.exp_panel = ExperimentPanel(self)
+        self.exp_panel.build()
         self.Fit()
-        self.exp_panel.Show()
+        self.end = ExperimentEnd(self)
+        self.exp_panel.start()
+
 
 class ExperimentPanel(wx.Panel):
     def __init__(self,parent):
         self.parent = parent
         super().__init__(self.parent)
+        self.controller = parent.controller
 
 
         self.vbox = wx.BoxSizer(wx.VERTICAL)
-
-        self.ctrl_toolbar = ExperimentToolbar(self)
-
-
         self.plot = PlotPanel(self,self.parent.controller,self.parent.management)
 
+        self.ctrl_toolbar = ExperimentToolbar(self)
+        self.infotext = wx.StaticText(self, label = 'loooo')
 
         self.vbox.Add(self.ctrl_toolbar,0,wx.ALL|wx.EXPAND,0)
         self.vbox.Add(self.plot,1,wx.ALL|wx.EXPAND,0)
+        self.vbox.Add(self.infotext,1,wx.ALL|wx.EXPAND,0)
+        #event cls will be triggered with gui_q
+        self.Bind(EVT_CLS,self.OnClose)
+        self.Hide()
 
+    def updateinfo(self):
+        while True:
+            info = self.controller.exp_info_q.get()
+            if info == 'KILL':
+                return
+            self.infotext.SetLabel('Cycle {}, Amplitude {}, Frequency {}, Waveform {}, Duration {}'.format(*info))
+            self.Layout()
+
+    def stop_callback(self):
+        #experiment gives the stop signal
+        while True:
+            gui_cmd = self.controller.gui_q.get()
+            if gui_cmd == 'KILL':
+                self.controller.exp_info_q.put(gui_cmd)
+                self.GetEventHandler().ProcessEvent(CloseEvent())
+                return
+            else:
+                continue
+
+    def start(self):
+        self.plot.plot_thread.start()
+
+        self.worker_id = self.parent.management.work(function=self.parent.controller.start_experiment, args=(self,))
+        self.callback = Thread(target=self.stop_callback, daemon = True)
+        self.callback.start()
+        self.info = Thread(target=self.updateinfo,daemon = True)
+        self.info.start()
+    def build(self):
         self.vbox.SetSizeHints(self)
         self.SetSizer(self.vbox)
         self.Layout()
-
         self.Show()
 
-    def start(self):
-        self.worker_id = self.parent.management.work(function=self.parent.controller.start_experiment, args=(self,))
 
     def OnClose(self,e):
 
-
         self.Hide()
-        parent.startpanel.Show()
+
+        self.parent.end.Show()
+
+
 
 class ExperimentToolbar(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
         self.sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.Stop = wx.Button(self,id=wx.ID_NO,label='Pause')
-        self.Forward = wx.Button(self,id=wx.ID_FORWARD, label='Continue')
-        self.Reset = wx.Button(self,id=wx.ID_FORWARD,label='Stop')
+        self.Stop = wx.Button(self,id=wx.ID_ANY,label='Stop')
 
         self.sizer.Add(self.Stop,0,wx.EXPAND,0)
-        self.sizer.Add(self.Forward,0,wx.EXPAND,0)
-        self.sizer.Add(self.Reset,0,wx.EXPAND,0)
+
+
+
+        self.Bind(wx.EVT_BUTTON,self.OnStop, self.Stop)
+
 
         self.parent=parent
 
+        #sometimes the screen doesn't fit, that's why Fit() fkt is called after SetSizerAndFit()
         self.SetSizerAndFit(self.sizer)
+        self.Fit()
 
 
-
-    def OnPause(self,e):
-        self.parent.controller.motor.pos_q.put('PAUSE')
-
-    def OnForward(self,e):
-        self.parent.controller.motor.pos_q.put(True)
 
     def OnStop(self, e):
-        self.parent.controller.motor.pos_q.put('KILL')
+
+        self.parent.controller.control('KILL')
+
+
+
+
 
 class PlotPanel(wx.Panel):
     def __init__(self,parent,controller,manager):
@@ -143,7 +193,7 @@ class PlotPanel(wx.Panel):
         super().__init__(self.parent)
 
         self.pos_q, self.force_q = controller.motor.pos_q, controller.force_sensor.force_q
-        self.ctrl_q = controller.controller_q
+        self.ctrl_q = controller.plot_control
 
         self.manager = manager
 
@@ -155,10 +205,11 @@ class PlotPanel(wx.Panel):
         self.sizer.Add(self.plt,0,wx.ALL|wx.EXPAND,0)
 
         plot_stop_q = Queue()
-        self.plot_thread = Thread(target=self.plt.plotting,args=(plot_stop_q,))
 
-        self.plot_thread.start()
-        parent.start()
+        self.plot_thread = Thread(target=self.plt.plotting,args=(plot_stop_q,), daemon=True)
+
+
+
         self.SetSizerAndFit(self.sizer)
 
     def join_plot(self):
@@ -166,8 +217,37 @@ class PlotPanel(wx.Panel):
         self.plot_thread.join()
 
     def end(self):
-        print('end')
         parent.OnClose(None)
+
+class ExperimentEnd(wx.Panel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.Text = wx.StaticText(self,label='EXPERIMENT ENDED')
+        self.BackHomeButton = wx.Button(self, -1,'Back Home')
+        self.ExitButton = wx.Button(self, -1,'Exit')
+
+        self.sizer = wx.BoxSizer(wx.VERTICAL)
+
+        self.bsizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.bsizer.Add(self.BackHomeButton,0,wx.EXPAND,0)
+        self.bsizer.Add(self.ExitButton,0,wx.EXPAND,0)
+
+        self.sizer.Add(self.Text,0,wx.EXPAND,0)
+        self.sizer.Add(self.bsizer,0,wx.EXPAND,0)
+        self.SetSizerAndFit(self.sizer)
+        self.Layout()
+        self.Hide()
+        self.Bind(wx.EVT_BUTTON,self.OnBackHome, self.BackHomeButton)
+        self.Bind(wx.EVT_BUTTON,self.OnExit, self.ExitButton)
+
+    def OnBackHome(self,e):
+        self.Hide()
+        self.parent.startpanel.Show()
+    def OnExit(self,e):
+        self.parent.OnExit(e)
+
+
 
 
 
@@ -200,7 +280,6 @@ class StartPanel(wx.Panel):
         self.sizer.SetSizeHints(self)
         self.SetSizer(self.sizer)
 
-        self.Show()
 
     def OnNewConf(self,e):
         dlg = ExperimentConfigPanel(self)
@@ -242,12 +321,10 @@ class ManualMovementPanel(wx.Panel):
 
 
     def activate(self):
-        print('activate')
         self.q = self.management.Queue()
         self.is_activated = True
         self.process_id = self.management.work(function= self.move,args=(self.q,))
     def deactivate(self):
-        print('deactivate')
         if not self.is_activated:
             raise RuntimeError('Please Activate First :)')
 
@@ -263,6 +340,56 @@ class ManualMovementPanel(wx.Panel):
 
 
 #config panels
+class FSCalibrate(wx.Dialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.sizer = wx.BoxSizer(wx.VERTICAL)
+        self.text = wx.StaticText(self, label='Force Sensor Calibration, \n Please put 100g weight on the Force Sensor and push the button')
+        self.button = wx.Button(self,-1, 'GO')
+
+        self.sizer.Add(self.text,0,wx.EXPAND,0)
+        self.sizer.Add(self.button,0,wx.EXPAND,0)
+
+        self.button.Bind(wx.EVT_BUTTON, self.OnGO)
+        self.fs =  self.parent.controller.force_sensor
+        self.SetSizerAndFit(self.sizer)
+        self.readfkt = self.fs.getreading
+
+        self.ShowModal()
+
+    def OnGO(self,e):
+
+        self.first = self.average_readings(20)
+        self.text.SetLabel('Now put 200g and press the button')
+        self.Layout()
+        self.button.Unbind(wx.EVT_BUTTON)
+        self.button.Bind(wx.EVT_BUTTON, self.OnSecondGo)
+
+    def OnSecondGo(self,e):
+        self.second = self.average_readings(20)
+        self.calibrate()
+        self.Destroy()
+
+
+    def calibrate(self):
+
+        difference = self.second - self.first
+
+        multiplier = 0.9807/difference
+        offset = self.first - difference
+
+        self.fs.multiplier, self.fs.offset = multiplier,offset
+
+    def average_readings(self,iter):
+        #get the average of iter readings
+
+        readings = []
+        for i in range(iter):
+            readings.append(self.readfkt())
+        return mean(readings)
+
+
 class Conf(wx.Dialog):
     def __init__(self, parent):
         super().__init__(parent)

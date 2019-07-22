@@ -1,3 +1,4 @@
+
 from matplotlib import pyplot as plt
 import matplotlib
 matplotlib.use('WXagg')
@@ -9,8 +10,11 @@ import timeit
 import time
 import threading
 
+#Lock object for locking the read thread
+lock = threading.RLock()
+
 class Plotter(FigureCanvasWxAgg):
-    def __init__(self,parent, pos_q,force_q,control_q, max_len=10000,plot_delay=0.5, read_delay=0.0001):
+    def __init__(self,parent, pos_q,force_q,control_q, max_len=10000,plot_delay=0.3, read_delay=0.0001):
         self.fig = plt.figure(figsize=(7, 6), dpi=75)
         self.parent = parent
         super().__init__(self.parent,id=ID_ANY,figure=self.fig)
@@ -39,44 +43,48 @@ class Plotter(FigureCanvasWxAgg):
         self.reading = False
 
 
-    def read_data(self,ps):
-        #pos_q is called in plotting to end the loop
+    def read_data(self, ps):
+        global lock
+
         self.reading = True
         while self.reading:
-
-
-            ps.put(False)
-
-
             ctrl = self.control_q.get()
 
             if ctrl == 'KILL':
-                ps.put('KILL')
+                ps.put(ctrl)
                 break
+
             else:
                 self.control_q.put(False)
 
+            ps.put(False)
+            lock.acquire()
+
             if self.timer is None:
                 self.timer = timeit.default_timer()
+            try:
+                force, pos = self.force_q.get(), self.pos_q.get()
+                self.force_over_time.append(force)
+                self.position_over_time.append(pos)
+                self.times.append(timeit.default_timer()-self.timer)
 
-            self.force_over_time.append(self.force_q.get())
-            self.position_over_time.append(self.pos_q.get())
-            self.times.append(timeit.default_timer()-self.timer)
 
+                if len(self.position_over_time) >self.max_len:
+                    self.position_over_time.popleft()
+                    self.force_over_time.popleft()
+                    self.times.popleft()
+            finally:
+                lock.release()
 
-            if len(self.position_over_time) >self.max_len:
-                self.position_over_time.popleft()
-                self.force_over_time.popleft()
-                self.times.popleft()
-            ps.put(True)
-            time.sleep(self.read_delay)
 
 
     def plotting(self,plot_stop_q):
+
         force_line = self.force.plot(self.times,self.force_over_time,'r')
         position_line = self.position.plot(self.times,self.position_over_time,'b')
         self.plot_stop_q = plot_stop_q
-        self.read_thread = threading.Thread(target=self.read_data,args= (self.plot_stop_q,))
+
+        self.read_thread = threading.Thread(target=self.read_data,args= (self.plot_stop_q,),daemon=True)
         self.read_thread.start()
         time.sleep(self.plot_delay)
 
@@ -84,8 +92,6 @@ class Plotter(FigureCanvasWxAgg):
             if plot_stop_q.get() == 'KILL':
                 self.reading = False
                 self.read_thread.join()
-                self.parent.join_plot()
-                self.parent.end()
                 break
             else:
                 plot_stop_q.put(False)
@@ -95,7 +101,6 @@ class Plotter(FigureCanvasWxAgg):
                 force_line[0].set_ydata(self.force_over_time)
                 position_line[0].set_xdata(self.times)
                 position_line[0].set_ydata(self.position_over_time)
-
 
 
             self.fig.canvas.draw()

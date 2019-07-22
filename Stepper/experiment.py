@@ -35,11 +35,14 @@ object Experiment :
 
 
 class Experiment(object):
-    def __init__(self,motor,force_sensor,controller_q,test=False):
+    def __init__(self,motor,force_sensor,controller_q,gui_q,info_q, ctrl_f ,test=False):
         logging.info('-----INITIALIZING EXPERIMENT------')
         logging.basicConfig(filename='experiment.log', filemode='w+',
                             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         self.ctrl_q = controller_q
+        self.gui_q = gui_q
+        self.info_q = info_q
+        self.control_fkt = ctrl_f
 
         self.motor = motor
 
@@ -71,23 +74,33 @@ class Experiment(object):
         waveforms = waveforms[1:-1].split(",")
 
         cycle_count=0
+        self.stp = False
 
         for amplitude,frequency, cycletime, waveform, waitingtime in zip(amplitudes,frequencies, cycletimes,waveforms, waitingtimes):
+            if self.stp:
+                break
             cycle_count += 1
-            print('starting cycle {}'.format(cycle_count))
+            self.info_q.put((cycle_count,amplitude,frequency,waveform,cycletime))
+
             logging.info('-----STARTING CYCLE {}-----'.format(cycle_count))
 
             self.StartCycle(float(amplitude), float(frequency), int(cycletime), int(waveform), mode,startingforce, startingspeed)
 
-            #self.EndCycle()
+                #self.EndCycle()
 
 
             logging.info('------CYCLE {} FINISHED------'.format(cycle_count))
-            print('------CYCLE {} FINISHED------'.format(cycle_count))
             sleep(int(waitingtime))
 
 
-        self.ctrl_q.put('KILL')
+        self.stop()
+
+    def stop(self):
+        self.stp = True
+        self.control_fkt('KILL')
+
+        self.gui_q.put('KILL')
+        return
 
 
 
@@ -118,22 +131,18 @@ class Experiment(object):
 
             control = self.ctrl_q.get()
 
-            if control == "PAUSE":
-                while True:
-                    endtime += int(time())
-                    sleep()
-                    if self.ctrl_q == True:
-                        break
 
             if control == "KILL":
+                self.stp = True
                 break
+
             else:
                 self.ctrl_q.put(True)
 
 
+
             self.motor.move_one_period(amplitude, frequency ,waveform, mode)
             logging.info('-------Period {}--------'.format(i))
-            print('period {} finished'.format(i))
             i += 1
 
     """

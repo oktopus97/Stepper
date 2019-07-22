@@ -83,6 +83,9 @@ class Motor(object):
         self.step, self.dir, self.m1, self.m2, self.m3 = int(self.step), int(self.dir),int(self.m1),int(self.m2),int(self.m3)
         self.mode = (self.m1, self.m2, self.m3)
 
+        self.manual_speed =  int(configreader('manual motor speed (mm/s)', category='manual_config', file='Stepper/config.cfg')[0][2:-2])
+        print(self.manual_speed)
+
 
 
 
@@ -162,7 +165,7 @@ class Motor(object):
 
         #compute the step count and freq for 1 mm in 1 mm/s
         steps = self.steps_per_rev/10
-        freq = 1/4 * 1 ## adjust speed
+        freq = 1/4 * self.manual_speed ## adjust speed
 
         #move it
         self.move_steps(steps, freq, dir)
@@ -208,10 +211,13 @@ class ForceSensor():
             self.adc = Adafruit_ADS1x15.ADS1015()
         self.GAIN = 2 / 3
         self.offset = 1
+        self.multiplier = 1
 
     def getreading(self):
         if self.test:
-            return 100
+
+            import random
+            return random.randint(0,50)
 
             # Read the specified ADC channel using the previously set gain value.
         reading = (self.adc.read_adc(0, gain=self.GAIN))
@@ -222,7 +228,7 @@ class ForceSensor():
             # values[i] = adc.read_adc(i, gain=GAIN, data_rate=128)
             # Each value will be a 12 or 16 bit signed integer value depending on the
             # ADC (ADS1015 = 12-bit, ADS1115 = 16-bit).
-        force =   (reading-240)/3.64 * 0.00981
+        force =   (reading-self.offset)*self.multiplier
         return force
 
     def put_reading(self):
