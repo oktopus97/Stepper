@@ -14,6 +14,8 @@ class Management(object):
         worker.start()
         self.workers.append(worker)
         return len(self.workers)-1
+    def terminate(self,worker_id):
+        self.workers[worker_id].terminate()
 
     def join(self,index):
         self.workers[index].join()

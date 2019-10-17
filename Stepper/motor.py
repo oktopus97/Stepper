@@ -1,10 +1,18 @@
-from time import sleep
+from time import sleep, time
+import sys,os
+sys.path.append(os.getcwd())
 from Stepper.tools import computeLinearDelay, configreader,get_sin_table
 from Stepper.constants import  RESOLUTION_DICT
 from matplotlib import pyplot as plt
 import timeit
 from matplotlib import pyplot as plt
 import numpy as np
+
+import Stepper.GPIO as GPIO
+
+
+
+
 
 #from config import step_angle, dir, step, m1, m2, m3 , gpio_mode
 
@@ -66,118 +74,94 @@ class Motor(object):
     m3 (def = 18)
 
     """
-    def __init__(self,pos_q,force_sensor,test=False):
-        self.position = 0
-        self.pos_q=pos_q
+    def __init__(self,force_sensor,test=False):
+        
         self.fs=force_sensor
+        
         #test variablen
-        self.c_bilanz = 0
-        self.pos = []
+        
         ##reading settings from file
+        self.update_features()
 
 
 
+        
+
+
+
+        self.steps_per_rev = int(360/float(self.angle))*RESOLUTION_DICT[self.resolution][1]
+        self.test = test
+        
+        self.GPIO_OUTPUTS = False
+    
+    def update_features(self):
         [self.gpio_mode, self.resolution,self.angle, self.dir, self.step, self.m1,self.m2,self.m3] =  configreader('gpio_mode',"resolution",'step_angle','dir',
                                                                                           'step','m1','m2','m3',category='motor_config',
                                                                                                                    file="Stepper/motorconfig.cfg")
         self.step, self.dir, self.m1, self.m2, self.m3 = int(self.step), int(self.dir),int(self.m1),int(self.m2),int(self.m3)
         self.mode = (self.m1, self.m2, self.m3)
 
-        self.manual_speed =  int(configreader('manual motor speed (mm/s)', category='manual_config', file='Stepper/config.cfg')[0][2:-2])
-        print(self.manual_speed)
+        self.manual_speed =  int(configreader('manual motor speed (mm/s)', category='manual_config', file='Stepper/config.cfg')[0])
 
 
 
-
-        self.steps_per_rev = int(360/float(self.angle))*RESOLUTION_DICT[self.resolution][1]
-        self.test = test
-        if not test:
-            import GPIO
-
-
-    def move_one_period(self, amplitude, frequency, waveform, mode):
+    def move_one_period(self, step_count, delay, mode,start):
         """
         Moves the motor one period
         :param mode: Lasttyp von der Bioreaktor 'z' 'd'  default 'd'
         :param distance: in mm positive for up negative for down
         """
 
-        ##computing the step count for the given amplitude and resolution coef
-        i = 1 #getriebe übersetzung 1mm/rev bei unserem BioReaktor
-        step_count = int(float(amplitude)*self.steps_per_rev*i)
-
         basedir = True if mode == "0" else False
 
         dir = basedir ##1 for down
-        self.move_steps(step_count, frequency,dir, waveform=waveform)
+        self.move_steps(step_count, delay,dir,start)
         #GPIO.move_periodPWM(self, self.step, self.dir, frequency, step_count, dir,waveform, mode)
 
 
 
         dir = not basedir
-        self.move_steps(step_count, frequency,dir, waveform=waveform,reverse_delays=True)
+        self.move_steps(step_count, delay,dir,start,reverse_delays=True)
 
         #GPIO.move_periodPWM(self, self.step,self.dir,  frequency,step_count,dir,waveform, mode)
 
 
-    def move_steps(self, step_count, frequency, dir, waveform = 0,delay =None,reverse_delays=False):
-        if waveform == 1:
-            delay_list = get_sin_table(step_count,frequency)
-            if reverse_delays:
-                delay_list  = delay_list[::-1]
-        else:
-            if delay is None:
-                delay = computeLinearDelay(step_count, frequency)
-            else:
-                delay = delay
-
-
+    def move_steps(self, step_count, delay, dir,start=None,freq=None, reverse_delays=False):
+    
+        if not self.GPIO_OUTPUTS:
+            self.INITGPIO()
+        
+        if delay is None:
+            delay = computeLinearDelay(step_count, freq)
+        
         if not self.test:
             GPIO.setdir(dir,self.dir)
-
+       
         for i in range(int(step_count)):
 
-            if not dir:
-                c = 1
-            else:
-                c = -1
-            if waveform==1:
-                delay = delay_list[i]
-
-
-
-            self.position = np.add(self.position, c/self.steps_per_rev)
-            self.put_reading()
-
             if not self.test:
-                GPIO.step_pulse(delay,self.step)
+                GPIO.step_pulse(delay[i],self.step)
 
-            sleep(delay)
+            sleep(delay[i])
 
-        return delay
-
-    def put_reading(self):
-        self.pos_q.put(self.position)
-        self.fs.put_reading()
-
-    def move_up_down(self, dir):
+        
+           
+    def move_up_down(self, dir, test=False, distance=0.1):
         #zero for up
-
+        #moves 0.1 mm every call
         #compute the step count and freq for 1 mm in 1 mm/s
-        steps = self.steps_per_rev/10
-        freq = 1/4 * self.manual_speed ## adjust speed
+        steps = int(self.steps_per_rev*distance)
+        freq = 1/2 * self.manual_speed*100 ## adjust speed
 
         #move it
-        self.move_steps(steps, freq, dir)
+        if not test:
+            self.move_steps(steps,None, dir, freq)
 
 
 
-    def backtozero(self):
-        return
-        steps = self.position*self.steps_per_rev
-        frequency = (self.position/4)# adjust speed
-        self.move_steps(steps,frequency,dir=0)
-        self.position = 0
+    def backtozero(self, distance):
+        print(distance)
+        self.move_up_down(0, self.test, distance)
 
 
 
@@ -192,6 +176,7 @@ class Motor(object):
         self.openPorts(self.m1, self.m2, self.m3,  mode = self.gpio_mode)
         if not self.test:
             GPIO.set_mode(self.mode,RESOLUTION_DICT[self.resolution][0])
+            
         self.GPIO_OUTPUTS=True
 
 
@@ -204,15 +189,25 @@ class Motor(object):
 
 
 class ForceSensor():
-    def __init__(self,force_q,test=False):
-        self.force_q=force_q
+    def __init__(self,test=False):
+        
         self.test=test
         if not self.test:
-            self.adc = Adafruit_ADS1x15.ADS1015()
+            import busio
+            import board
+            import adafruit_ads1x15.ads1015 as ADS
+            from adafruit_ads1x15.analog_in import AnalogIn
+            
+            i2c = busio.I2C(board.SCL, board.SDA)
+            
+            self.ads = ADS.ADS1015(i2c)
+            self.chan = AnalogIn(self.ads, ADS.P0)
         self.GAIN = 2 / 3
-        self.offset = 1
-        self.multiplier = 1
-
+        self.set_calibration()
+    def set_calibration(self):
+        self.offset, self.multiplier = configreader('offset', 'multiplier',category='calibration',file="Stepper/motorconfig.cfg")
+        self.offset,self.multiplier = float(self.offset), float(self.multiplier)
+    
     def getreading(self):
         if self.test:
 
@@ -220,7 +215,7 @@ class ForceSensor():
             return random.randint(0,50)
 
             # Read the specified ADC channel using the previously set gain value.
-        reading = (self.adc.read_adc(0, gain=self.GAIN))
+        reading = (self.chan.value)
             # Note you can also pass in an optional data_rate parameter that controls
             # the ADC conversion time (in samples/second). Each chip has a different
             # set of allowed data rate values, see datasheet Table 9 config register
@@ -231,19 +226,6 @@ class ForceSensor():
         force =   (reading-self.offset)*self.multiplier
         return force
 
-    def put_reading(self):
-
-        self.force_q.put(self.getreading())
 
 
-"""
-fs = ForceSensor()
-readings = []
 
-for i in range(100):
-    readings.append(fs.getreading())
-print(readings)
-plt.plot(readings)
-plt.show()
-
-"""

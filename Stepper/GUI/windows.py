@@ -4,14 +4,14 @@ import sys,os
 sys.path.append(os.getcwd())
 from Stepper.tools import configwriter
 import wx
-from wxasync import StartCoroutine
 from time import sleep
+import timeit
 
-from plotter import Plotter
+from plot import Plotter
 from threading import Thread, Lock
 from queue import Queue
 import asyncio
-from events import CloseEvent, EVT_CLS
+from events import CloseEvent, EVT_CLS, PlotEvent, EVT_PLT
 
 from statistics import mean
 
@@ -21,6 +21,7 @@ class MainWindow(wx.Frame):
     def __init__(self,parent,controller,management):
         super().__init__(parent=parent)
         self.controller = controller
+        
         self.management = management
         self.startpanel = StartPanel(self)
 
@@ -84,7 +85,7 @@ class MainWindow(wx.Frame):
         conf = Conf(self)
         conf.ShowModal()
 
-    def Start(self):
+    def Start(self,test=False):
         self.startpanel.Hide()
         if self.startpanel.manual_panel.is_activated:
             self.startpanel.manual_panel.deactivate()
@@ -93,7 +94,7 @@ class MainWindow(wx.Frame):
         self.exp_panel.build()
         self.Fit()
         self.end = ExperimentEnd(self)
-        self.exp_panel.start()
+        self.exp_panel.start(test)
 
 
 class ExperimentPanel(wx.Panel):
@@ -106,43 +107,49 @@ class ExperimentPanel(wx.Panel):
         self.vbox = wx.BoxSizer(wx.VERTICAL)
         self.plot = PlotPanel(self,self.parent.controller,self.parent.management)
 
-        self.ctrl_toolbar = ExperimentToolbar(self)
-        self.infotext = wx.StaticText(self, label = 'loooo')
-
+        self.ctrl_toolbar = ExperimentToolbar(self, self.controller.info_q)
+        
         self.vbox.Add(self.ctrl_toolbar,0,wx.ALL|wx.EXPAND,0)
         self.vbox.Add(self.plot,1,wx.ALL|wx.EXPAND,0)
-        self.vbox.Add(self.infotext,1,wx.ALL|wx.EXPAND,0)
         #event cls will be triggered with gui_q
         self.Bind(EVT_CLS,self.OnClose)
         self.Hide()
-
+        self.worker_id = None
+    """
     def updateinfo(self):
         while True:
             info = self.controller.exp_info_q.get()
             if info == 'KILL':
                 return
-            self.infotext.SetLabel('Cycle {}, Amplitude {}, Frequency {}, Waveform {}, Duration {}'.format(*info))
+            wx.CallAfter(self.infotext.SetLabel,'Cycle {}, Amplitude {}, Frequency {}, Waveform {}, Duration {}'.format(*info))
             self.Layout()
+    """
 
     def stop_callback(self):
         #experiment gives the stop signal
         while True:
-            gui_cmd = self.controller.gui_q.get()
-            if gui_cmd == 'KILL':
-                self.controller.exp_info_q.put(gui_cmd)
+            cmd = self.controller.exp_q.get()
+            if cmd == 'EXPERIMENT END':
                 self.GetEventHandler().ProcessEvent(CloseEvent())
                 return
             else:
                 continue
+    
 
-    def start(self):
-        self.plot.plot_thread.start()
-
-        self.worker_id = self.parent.management.work(function=self.parent.controller.start_experiment, args=(self,))
-        self.callback = Thread(target=self.stop_callback, daemon = True)
-        self.callback.start()
+    def start(self, test=False):
+        if not test:
+            self.worker_id = self.parent.management.work(function=self.parent.controller.start_experiment, args=(self,))
+            start_time = self.controller.exp_q.get()
+            self.callback = Thread(target=self.stop_callback, daemon = True)
+            self.callback.start()
+        else:
+            start_time = timeit.default_timer()
+        self.plot.plt.set_start(start_time)
+        self.plot.timer.Start(500)
+        """
         self.info = Thread(target=self.updateinfo,daemon = True)
         self.info.start()
+        """
     def build(self):
         self.vbox.SetSizeHints(self)
         self.SetSizer(self.vbox)
@@ -151,6 +158,8 @@ class ExperimentPanel(wx.Panel):
 
 
     def OnClose(self,e):
+        self.plot.timer.Stop()
+        
 
         self.Hide()
 
@@ -159,11 +168,12 @@ class ExperimentPanel(wx.Panel):
 
 
 class ExperimentToolbar(wx.Panel):
-    def __init__(self, parent):
+    def __init__(self, parent,info_q):
         super().__init__(parent)
+        self.info_q = info_q
         self.sizer = wx.BoxSizer(wx.HORIZONTAL)
         self.Stop = wx.Button(self,id=wx.ID_ANY,label='Stop')
-
+        
         self.sizer.Add(self.Stop,0,wx.EXPAND,0)
 
 
@@ -177,11 +187,18 @@ class ExperimentToolbar(wx.Panel):
         self.SetSizerAndFit(self.sizer)
         self.Fit()
 
-
-
+    
     def OnStop(self, e):
-
-        self.parent.controller.control('KILL')
+        if self.parent.worker_id is None:
+            self.parent.Hide()
+            self.parent.plot.timer.Stop()
+            self.parent.plot.plt.clear()
+            self.parent.parent.startpanel.Show()
+            return
+        
+        self.parent.parent.management.terminate(self.parent.worker_id)
+        self.parent.parent.controller.motor.backtozero(self.info_q.get()[0]*2)
+        self.parent.OnClose(e)
 
 
 
@@ -192,22 +209,14 @@ class PlotPanel(wx.Panel):
         self.parent = parent
         super().__init__(self.parent)
 
-        self.pos_q, self.force_q = controller.motor.pos_q, controller.force_sensor.force_q
-        self.ctrl_q = controller.plot_control
-
         self.manager = manager
 
-        self.draw_q = manager.Queue()
-
-        self.plt = Plotter(self, self.pos_q, self.force_q,self.ctrl_q)
+        self.plt = Plotter(self, parent.parent.controller.force_sensor.getreading)
 
         self.sizer = wx.BoxSizer(wx.VERTICAL)
         self.sizer.Add(self.plt,0,wx.ALL|wx.EXPAND,0)
-
-        plot_stop_q = Queue()
-
-        self.plot_thread = Thread(target=self.plt.plotting,args=(plot_stop_q,), daemon=True)
-
+        self.timer = wx.Timer(self, wx.ID_ANY)
+        self.Bind(wx.EVT_TIMER, self.plt.update)
 
 
         self.SetSizerAndFit(self.sizer)
@@ -242,8 +251,10 @@ class ExperimentEnd(wx.Panel):
         self.Bind(wx.EVT_BUTTON,self.OnExit, self.ExitButton)
 
     def OnBackHome(self,e):
-        self.Hide()
-        self.parent.startpanel.Show()
+        import os
+        pid = os.getpid()
+        os.system(os.getcwd()+"/Stepper/GUI/newapp.sh "+str(pid))
+        
     def OnExit(self,e):
         self.parent.OnExit(e)
 
@@ -258,13 +269,16 @@ class StartPanel(wx.Panel):
         self.sizer = wx.BoxSizer(wx.VERTICAL)
         self.old_conf = wx.Button(self,-1,'Start the Experiment')
         self.new_conf =  wx.Button(self, -1, 'Set new configuration')
+        self.test =  wx.Button(self, -1, 'Test the Force Measurement')
 
         self.Bind(wx.EVT_BUTTON,self.OnNewConf, self.new_conf)
         self.Bind(wx.EVT_BUTTON,self.OnGo, self.old_conf)
+        self.Bind(wx.EVT_BUTTON,self.OnTest, self.test)
 
 
         self.sizer.Add(self.old_conf,0,wx.EXPAND,0)
         self.sizer.Add(self.new_conf,0,wx.EXPAND,0)
+        self.sizer.Add(self.test,0,wx.EXPAND,0)
 
 
         self.movementsizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -287,7 +301,8 @@ class StartPanel(wx.Panel):
     def OnGo(self,e):
 
         self.parent.Start()
-
+    def OnTest(self, e):
+        self.parent.Start(True)
 
 
 
@@ -315,9 +330,10 @@ class ManualMovementPanel(wx.Panel):
     def move(self,q):
         while self.is_activated:
             dir = q.get()
-            self.controller.motor.move_up_down(dir)
             if dir is None:
                 break
+            self.controller.motor.move_up_down(dir)
+            
 
 
     def activate(self):
@@ -347,6 +363,7 @@ class FSCalibrate(wx.Dialog):
         self.sizer = wx.BoxSizer(wx.VERTICAL)
         self.text = wx.StaticText(self, label='Force Sensor Calibration, \n Please put 100g weight on the Force Sensor and push the button')
         self.button = wx.Button(self,-1, 'GO')
+        
 
         self.sizer.Add(self.text,0,wx.EXPAND,0)
         self.sizer.Add(self.button,0,wx.EXPAND,0)
@@ -379,7 +396,7 @@ class FSCalibrate(wx.Dialog):
         multiplier = 0.9807/difference
         offset = self.first - difference
 
-        self.fs.multiplier, self.fs.offset = multiplier,offset
+        configwriter('Stepper/motorconfig.cfg','calibration', ["multiplier", "offset"],multiplier, offset)
 
     def average_readings(self,iter):
         #get the average of iter readings
@@ -392,7 +409,8 @@ class FSCalibrate(wx.Dialog):
 
 class Conf(wx.Dialog):
     def __init__(self, parent):
-        super().__init__(parent)
+        self.parent = parent
+        super().__init__(self.parent)
         self.cfg = 'manual.cfg'
         self.sizer = wx.BoxSizer(wx.VERTICAL)
 
@@ -421,7 +439,8 @@ class Conf(wx.Dialog):
         for index, input in enumerate(self.inputs):
             feature_names.append(self.specs[index][0])
             features.append(input.GetValue())
-        configwriter('Stepper/config.cfg','manual_config', feature_names,features)
+        configwriter('Stepper/config.cfg','manual_config', feature_names,*features)
+        self.parent.controller.motor.update_features()
     def OnOK(self,e):
         self.OnApply(e)
         self.OnClose(e)
@@ -430,12 +449,13 @@ class Conf(wx.Dialog):
 
 class MotorConfigPanel(wx.Dialog):
     def __init__(self, parent):
-        super().__init__(parent)
+        self.parent = parent
+        super().__init__(self.parent)
         self.cfg = 'motorconfig.cfg'
         self.sizer = wx.BoxSizer(wx.VERTICAL)
 
         self.motor_specs = [('Step Angle',"1.8"), ('Resolution',"1/8")]
-        self.GPIO_config = [('GPIO Mode','BCM'), ('Dir Pin', "20"), ('Step Pin',"18"), ('Mode0',"14"),('Mode1',"15"),('Mode2',"21")]
+        self.GPIO_config = [('GPIO Mode','BCM'), ('Dir Pin', "20"), ('Step Pin',"21"), ('Mode0',"14"),('Mode1',"15"),('Mode2',"18")]
         self.inputs = []
         self.sizer.Add(wx.StaticText(self, label='Motor Specifications:'),0,wx.EXPAND,0)
         for spec_tuple in self.motor_specs:
@@ -470,7 +490,9 @@ class MotorConfigPanel(wx.Dialog):
         for index, input in enumerate(self.inputs):
             feature_names.append(feature_list[index][0])
             features.append(input.GetValue())
-        configwriter('Stepper/motorconfig.cfg','motor_config', feature_names,features)
+        configwriter('Stepper/motorconfig.cfg','motor_config', feature_names,*features)
+        self.parent.controller.motor.update_features()
+        
     def OnOK(self,e):
         self.OnApply(e)
         self.OnClose(e)
@@ -569,31 +591,28 @@ class ExperimentConfigPanel(wx.Dialog):
         waveforms = []
         cycletimes = []
         waitingtimes = []
+        repetitions = []
 
         for index, input in enumerate(self.inputs[2:]):
-            if index != 0:
-                waitingtimes.append(input[0].GetValue())
-                i = 1
-            else:
-                i = 0
-
-            amplitudes.append(input[i].GetValue())
-            frequencies.append(input[i+1].GetValue())
-            cycletimes.append(input[i+2].GetValue())
-            waveforms.append(input[i+3].GetSelection())
+            
+            amplitudes.append(input[0].GetValue())
+            frequencies.append(input[1].GetValue())
+            cycletimes.append(input[2].GetValue())
+            waveforms.append(input[3].GetSelection())
+            waitingtimes.append(input[4].GetValue())
+            repetitions.append(input[5].GetValue())
 
 
         waitingtimes.append('0')
-        feature_names = ['vorkraft','mode','amplitudes', 'frequencies','waveforms','cycletimes','waitingtimes']
-        configwriter("Stepper/experimentconfig.cfg", "experiment_config", feature_names, vorkraft,mode, amplitudes,frequencies,waveforms,cycletimes,waitingtimes)
+        feature_names = ['vorkraft','mode','amplitudes', 'frequencies','waveforms','cycletimes','waitingtimes', "repetitions"]
+        configwriter("Stepper/experimentconfig.cfg", "experiment_config", feature_names, vorkraft,mode, amplitudes,frequencies,waveforms,cycletimes,waitingtimes,repetitions)
         self.Close()
         self.parent.OnGo(e)
 
 
 
 def add_cycle(parent,count):
-    cycle_options = [('Waiting Time',None, parent)] if count != 1 else []
-    cycle_options += [('Amplitude',None, parent), ('Frequency', None, parent), ('Cycle Time', None,parent), ('Waveform',('Triangular','Sinus',),parent)]
+    cycle_options = [('Amplitude',None, parent), ('Frequency', None, parent), ('Cycle Time', None,parent), ('Waveform',('Triangular','Sinus',),parent),('Waiting Time',None, parent),('Repetitions',None, parent)]
     cycle_sizer = wx.BoxSizer(wx.VERTICAL)
     cycle_inputs = []
 

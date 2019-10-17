@@ -1,9 +1,10 @@
-import Stepper.motor as mt
+
 import logging
 
 from time import sleep, time
-from Stepper.tools import configreader
+from Stepper.tools import configreader, computeLinearDelay, get_sin_table
 import timeit
+import Stepper.motor
 
 """
 object Experiment :
@@ -33,17 +34,14 @@ object Experiment :
 
 """
 
-
 class Experiment(object):
-    def __init__(self,motor,force_sensor,controller_q,gui_q,info_q, ctrl_f ,test=False):
+    def __init__(self,motor,force_sensor,exp_q,info_q,test=False):
         logging.info('-----INITIALIZING EXPERIMENT------')
         logging.basicConfig(filename='experiment.log', filemode='w+',
                             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        self.ctrl_q = controller_q
-        self.gui_q = gui_q
+        
+        self.exp_q = exp_q
         self.info_q = info_q
-        self.control_fkt = ctrl_f
-
         self.motor = motor
 
         self.fs = force_sensor
@@ -57,55 +55,64 @@ class Experiment(object):
 
     def start(self,panel):
 
-        [amplitudes, frequencies, cycletimes, waveforms, mode, waitingtimes, startingforce, startingspeed] = configreader("amplitudes",
+        [amplitudes, frequencies, cycletimes, waveforms, mode, waitingtimes,repetitions, startingforce, startingspeed] = configreader("amplitudes",
                                                                                                            "frequencies",
                                                                                                            "cycletimes",
                                                                                                            "waveforms",
                                                                                                            "mode",
                                                                                                            "waitingtimes",
+                                                                                                            "repetitions",
                                                                                                            "vorkraft",
                                                                                                             "startingspeed",
                                                                                                            category="experiment_config",
                                                                                                            file="Stepper/experimentconfig.cfg")
 
 
-        amplitudes, frequencies, cycletimes, waitingtimes = amplitudes[1:-1].replace('\'','').split(","), frequencies[1:-1].replace('\'','').split(
-            ","), cycletimes[1:-1].replace('\'','').split(","), waitingtimes[1:-1].replace('\'','').split(",")
+        amplitudes, frequencies, cycletimes, waitingtimes, repetitions = amplitudes[1:-1].replace('\'','').split(","), frequencies[1:-1].replace('\'','').split(
+            ","), cycletimes[1:-1].replace('\'','').split(","), waitingtimes[1:-1].replace('\'','').split(","),repetitions[1:-1].replace('\'','').split(",")
         waveforms = waveforms[1:-1].split(",")
 
         cycle_count=0
-        self.stp = False
+        starttime = timeit.default_timer()
+        
+        self.exp_q.put(starttime)
+        self.info_q.put((1,))
+        
+        logging.info('-------INITIALIZING START FORCE---------')
+        self.initstartingforce(int(startingforce), int(startingspeed), mode)
+        
 
-        for amplitude,frequency, cycletime, waveform, waitingtime in zip(amplitudes,frequencies, cycletimes,waveforms, waitingtimes):
-            if self.stp:
-                break
+        for amplitude,frequency, cycletime, waveform, waitingtime, rep in zip(amplitudes,frequencies, cycletimes,waveforms, waitingtimes, repetitions):
+            
             cycle_count += 1
-            self.info_q.put((cycle_count,amplitude,frequency,waveform,cycletime))
+            self.info_q.put((amplitude, frequency, cycletime, cycle_count))
+
+            #self.info_q.put((cycle_count,amplitude,frequency,waveform,cycletime))
+            
 
             logging.info('-----STARTING CYCLE {}-----'.format(cycle_count))
-
-            self.StartCycle(float(amplitude), float(frequency), int(cycletime), int(waveform), mode,startingforce, startingspeed)
+            
+            for rep in range(int(rep)):
+                
+                self.StartCycle(float(amplitude), float(frequency), int(cycletime), int(waveform), mode,startingforce, startingspeed,starttime)
 
                 #self.EndCycle()
-
+                sleep(int(waitingtime))
+                
 
             logging.info('------CYCLE {} FINISHED------'.format(cycle_count))
-            sleep(int(waitingtime))
+            
 
 
-        self.stop()
-
-    def stop(self):
-        self.stp = True
-        self.control_fkt('KILL')
-
-        self.gui_q.put('KILL')
-        return
+        self.put()
+        
+    def put(self):
+        self.exp_q.put("EXPERIMENT END")
+        
 
 
 
-    def StartCycle(self, amplitude,frequency, cycletime, waveform, mode,startingforce,startingspeed):
-
+    def StartCycle(self, amplitude,frequency, cycletime, waveform, mode,startingforce,startingspeed,starttime):
         """
         :param amplitude:
         :param mode: Lasttyp von der Bioreaktor 'z' 'd' 'zdw' default 'd'
@@ -117,19 +124,21 @@ class Experiment(object):
         if not self.test:
             self.motor.INITGPIO()
 
-        cyclebeginpos = self.motor.position
-        self.ctrl_q.put(True)
-        logging.info('-------INITIALIZING START FORCE---------')
+        
+        #self.ctrl_q.put(True)
+        
 
-        self.initstartingforce(startingforce, startingspeed, mode)
+        
+        i=1 ##Getriebe Übersetzung
+        step_count = int(float(amplitude)*self.motor.steps_per_rev*i)
+        delay = computeLinearDelay(step_count, frequency) if waveform == 0 else get_sin_table(step_count,frequency)
 
-        ##loop with time
-
-        endtime = int(time()) + int(cycletime)
-        i = 1
-        while endtime > int(time()):
-
+        no_periods = int(cycletime*frequency)
+        start=int(time())
+        for i in range(no_periods):
+            """
             control = self.ctrl_q.get()
+            print(control)
 
 
             if control == "KILL":
@@ -139,11 +148,13 @@ class Experiment(object):
             else:
                 self.ctrl_q.put(True)
 
-
-
-            self.motor.move_one_period(amplitude, frequency ,waveform, mode)
-            logging.info('-------Period {}--------'.format(i))
-            i += 1
+            """
+            self.motor.move_one_period(step_count,delay, mode, starttime)
+        print(int(time()) - start)
+            
+            
+    
+            
 
     """
 
@@ -154,7 +165,7 @@ class Experiment(object):
     """
 
     def EndCycle(self):
-        self.motor.backtozero()
+        
         if not self.test:
             self.motor.cleanGPIO()
 
@@ -163,5 +174,13 @@ class Experiment(object):
     def initstartingforce(self,startingforce, startingspeed, mode):
         if self.test:
             return
-        while self.fs.getreading() < float(startingforce):
-            self.motor.move_up_down(0,self.test)
+        if startingforce != "":
+            while self.fs.getreading() < float(startingforce):
+                self.motor.move_up_down(0,self.test)
+"""
+motor = motor.Motor(None,None)
+experiment = Experiment(motor,None,None,None,None,None)
+import GUI.multiprocess as mp
+manager = mp.Management()
+manager.work(experiment.start,(None,))
+"""

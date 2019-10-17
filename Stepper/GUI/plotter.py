@@ -75,6 +75,7 @@ class Plotter(FigureCanvasWxAgg):
                     self.times.popleft()
             finally:
                 lock.release()
+                
 
 
 

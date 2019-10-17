@@ -1,7 +1,6 @@
 import RPi.GPIO as GPIO
 from time import sleep
 import numpy as np
-import pigpio
 
 """
 functions:
@@ -31,7 +30,6 @@ move_periodPWM()
     moves the motor with pigpio PWM
     
 """
-
 
 
 def initGPIO(*args,**kwargs):
@@ -68,7 +66,7 @@ def set_mode(modetuple,mode):
 
 def setdir(dir,dirpin):
     
-    GPIO.output(dirpin,GPIO.HIGH if dir else GPIO.LOW)
+    GPIO.output(dirpin,GPIO.HIGH if not dir else GPIO.LOW)
     
 
 

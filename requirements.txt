@@ -2,16 +2,6 @@ pathlib2
 wheel
 pygame
 matplotlib
+wheel
 
-python-dev
-gtk
-gstreamer
-gstreamer-plugins-base
-glut
-libwebkitgtk
-libjpeg
-libpng
-libtiff
-libsdl
-libnotify
-libsm
+adafruit-circuitpython-ads1x15
