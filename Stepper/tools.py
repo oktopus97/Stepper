@@ -23,10 +23,8 @@ def computeLinearDelay(step_count,frequency):
         frequency = 1
     
     delay = 1/(step_count*frequency*4)#muss noch halbiert werden, weil das programm zweimal schläft
-    delay_list = []
-    for i in range(step_count):
-        delay_list.append(delay)
-    return delay_list
+    
+    return delay
 
 def get_sin_table(steps, frequency):
     sampled_t = []

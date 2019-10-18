@@ -12,6 +12,7 @@ from threading import Thread, Lock
 from queue import Queue
 import asyncio
 from events import CloseEvent, EVT_CLS, PlotEvent, EVT_PLT
+from Stepper.constants import amp_range,freq_range, plot_delay
 
 from statistics import mean
 
@@ -111,6 +112,10 @@ class ExperimentPanel(wx.Panel):
         
         self.vbox.Add(self.ctrl_toolbar,0,wx.ALL|wx.EXPAND,0)
         self.vbox.Add(self.plot,1,wx.ALL|wx.EXPAND,0)
+        self.test_button = wx.Button(self,-1,"Back")
+        self.test_button.Bind(wx.EVT_BUTTON,self.OnHome)
+        self.vbox.Add(self.test_button,0,wx.EXPAND,0)
+        self.test_button.Hide()
         #event cls will be triggered with gui_q
         self.Bind(EVT_CLS,self.OnClose)
         self.Hide()
@@ -144,8 +149,11 @@ class ExperimentPanel(wx.Panel):
             self.callback.start()
         else:
             start_time = timeit.default_timer()
+            self.test_button.Show()
+        
         self.plot.plt.set_start(start_time)
-        self.plot.timer.Start(500)
+        self.plot.timer.Start(plot_delay)
+        
         """
         self.info = Thread(target=self.updateinfo,daemon = True)
         self.info.start()
@@ -164,6 +172,12 @@ class ExperimentPanel(wx.Panel):
         self.Hide()
 
         self.parent.end.Show()
+        
+    def OnHome(self,e):
+        self.plot.timer.Stop()
+        self.test_button.Hide()
+        self.Hide()
+        self.parent.Show()
 
 
 
@@ -361,7 +375,7 @@ class FSCalibrate(wx.Dialog):
         super().__init__(parent)
         self.parent = parent
         self.sizer = wx.BoxSizer(wx.VERTICAL)
-        self.text = wx.StaticText(self, label='Force Sensor Calibration, \n Please put 100g weight on the Force Sensor and push the button')
+        self.text = wx.StaticText(self, label='Force Sensor Calibration, \n Please put 50g weight on the Force Sensor and push the button')
         self.button = wx.Button(self,-1, 'GO')
         
 
@@ -378,7 +392,8 @@ class FSCalibrate(wx.Dialog):
     def OnGO(self,e):
 
         self.first = self.average_readings(20)
-        self.text.SetLabel('Now put 200g and press the button')
+        
+        self.text.SetLabel('Now put 100g and press the button')
         self.Layout()
         self.button.Unbind(wx.EVT_BUTTON)
         self.button.Bind(wx.EVT_BUTTON, self.OnSecondGo)
@@ -392,8 +407,7 @@ class FSCalibrate(wx.Dialog):
     def calibrate(self):
 
         difference = self.second - self.first
-
-        multiplier = 0.9807/difference
+        multiplier = 0.9807/(difference*2)
         offset = self.first - difference
 
         configwriter('Stepper/motorconfig.cfg','calibration', ["multiplier", "offset"],multiplier, offset)
@@ -401,12 +415,30 @@ class FSCalibrate(wx.Dialog):
     def average_readings(self,iter):
         #get the average of iter readings
 
-        readings = []
+        reading_sum = 0
         for i in range(iter):
-            readings.append(self.readfkt())
-        return mean(readings)
-
-
+            #get raw reading
+            reading_sum += (self.readfkt(raw=True))
+           
+        return reading_sum/iter
+        
+class FalseConf(wx.Dialog):
+    def __init__(self,parent, feature):
+        super().__init__(parent)
+        self.sizer = wx.BoxSizer(wx.VERTICAL)
+        self.sizer.Add(wx.StaticText(self, label='Please give a valid Value for {}'.format(feature)),0,wx.EXPAND,0)
+        self.button = wx.Button(self, -1, "Close")
+        self.sizer.Add(self.button,0,wx.EXPAND,0)
+        
+        self.button.Bind(wx.EVT_BUTTON,self.OnClose)
+        self.Layout()
+        self.sizer.SetSizeHints(self)
+        self.SetSizerAndFit(self.sizer)
+        self.ShowModal()
+        
+    def OnClose(self,e):
+        self.Close()
+        
 class Conf(wx.Dialog):
     def __init__(self, parent):
         self.parent = parent
@@ -454,12 +486,12 @@ class MotorConfigPanel(wx.Dialog):
         self.cfg = 'motorconfig.cfg'
         self.sizer = wx.BoxSizer(wx.VERTICAL)
 
-        self.motor_specs = [('Step Angle',"1.8"), ('Resolution',"1/8")]
+        self.motor_specs = [('Step Angle',"1.8"), ('Resolution',"1/8", ("1/8","Full","Half","1/4","1/2","1/16","1/32",))]
         self.GPIO_config = [('GPIO Mode','BCM'), ('Dir Pin', "20"), ('Step Pin',"21"), ('Mode0',"14"),('Mode1',"15"),('Mode2',"18")]
         self.inputs = []
         self.sizer.Add(wx.StaticText(self, label='Motor Specifications:'),0,wx.EXPAND,0)
         for spec_tuple in self.motor_specs:
-            spec_tuple = spec_tuple + (self,)
+            spec_tuple = spec_tuple[0:2] + (self,)
             sizer, input = inputsizer(spec_tuple)
             self.sizer.Add(sizer,0,wx.EXPAND,0)
             self.inputs.append(input)
@@ -489,7 +521,14 @@ class MotorConfigPanel(wx.Dialog):
         features = []
         for index, input in enumerate(self.inputs):
             feature_names.append(feature_list[index][0])
-            features.append(input.GetValue())
+            input_val = input.GetValue()
+            
+            if len(feature_list[index]) == 3 and input_val not in feature_list[index][2]:
+                dlg = FalseConf(self.parent,feature_list[index][0])
+                return
+                
+            
+            features.append(input_val)
         configwriter('Stepper/motorconfig.cfg','motor_config', feature_names,*features)
         self.parent.controller.motor.update_features()
         
@@ -592,11 +631,23 @@ class ExperimentConfigPanel(wx.Dialog):
         cycletimes = []
         waitingtimes = []
         repetitions = []
+        
+        
 
         for index, input in enumerate(self.inputs[2:]):
+            amp, freq = input[0].GetValue(),input[1].GetValue()
             
-            amplitudes.append(input[0].GetValue())
-            frequencies.append(input[1].GetValue())
+            if not amp_range[0] <= float(amp) <= amp_range[1]:
+                dlg = FalseConf(self.parent,"Amplitude")
+                return
+            elif not freq_range[0] <= float(freq) <=freq_range[1]:
+                dlg = FalseConf(self.parent,"Frequency")
+                return
+                
+            
+            
+            amplitudes.append(amp)
+            frequencies.append(freq)
             cycletimes.append(input[2].GetValue())
             waveforms.append(input[3].GetSelection())
             waitingtimes.append(input[4].GetValue())
@@ -612,7 +663,7 @@ class ExperimentConfigPanel(wx.Dialog):
 
 
 def add_cycle(parent,count):
-    cycle_options = [('Amplitude',None, parent), ('Frequency', None, parent), ('Cycle Time', None,parent), ('Waveform',('Triangular','Sinus',),parent),('Waiting Time',None, parent),('Repetitions',None, parent)]
+    cycle_options = [('Amplitude [mm]',None, parent), ('Frequency [Hz]', None, parent), ('Cycle Time [s]', None,parent), ('Waveform',('Triangular','Sinus',),parent),('Waiting Time [s]',None, parent),('Repetitions',None, parent)]
     cycle_sizer = wx.BoxSizer(wx.VERTICAL)
     cycle_inputs = []
 

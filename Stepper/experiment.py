@@ -79,7 +79,7 @@ class Experiment(object):
         self.info_q.put((1,))
         
         logging.info('-------INITIALIZING START FORCE---------')
-        self.initstartingforce(int(startingforce), int(startingspeed), mode)
+        self.initstartingforce(float(startingforce), float(startingspeed), mode)
         
 
         for amplitude,frequency, cycletime, waveform, waitingtime, rep in zip(amplitudes,frequencies, cycletimes,waveforms, waitingtimes, repetitions):
@@ -135,6 +135,7 @@ class Experiment(object):
 
         no_periods = int(cycletime*frequency)
         start=int(time())
+        
         for i in range(no_periods):
             """
             control = self.ctrl_q.get()

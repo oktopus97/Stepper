@@ -28,7 +28,7 @@ class Plotter(FigureCanvasWxAgg):
         self.ysf.append(float(self.get_reading()))
                     
         
-        if len(self.ysf) > 1000:
+        if len(self.ysf) > 50:
             for list in self.ysf, self.xs:
                 list.pop(0)
         self.ax1.clear()

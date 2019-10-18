@@ -7,6 +7,7 @@ from matplotlib import pyplot as plt
 import timeit
 from matplotlib import pyplot as plt
 import numpy as np
+from math import pi
 
 import Stepper.GPIO as GPIO
 
@@ -134,15 +135,20 @@ class Motor(object):
         if delay is None:
             delay = computeLinearDelay(step_count, freq)
         
+            
         if not self.test:
             GPIO.setdir(dir,self.dir)
-       
-        for i in range(int(step_count)):
+        if type(delay) == float:
+            for i in range(int(step_count)):
 
-            if not self.test:
+                GPIO.step_pulse(delay,self.step)
+                sleep(delay)
+        else:
+            for i in range(int(step_count)):
+
                 GPIO.step_pulse(delay[i],self.step)
+                sleep(delay[i])
 
-            sleep(delay[i])
 
         
            
@@ -151,17 +157,17 @@ class Motor(object):
         #moves 0.1 mm every call
         #compute the step count and freq for 1 mm in 1 mm/s
         steps = int(self.steps_per_rev*distance)
-        freq = 1/2 * self.manual_speed*100 ## adjust speed
+        ## adjust speed
+        delay = (self.manual_speed/(self.steps_per_rev*2))
 
         #move it
         if not test:
-            self.move_steps(steps,None, dir, freq)
+            self.move_steps(steps,delay, dir)
 
 
 
     def backtozero(self, distance):
-        print(distance)
-        self.move_up_down(0, self.test, distance)
+        self.move_up_down(1, self.test, distance)
 
 
 
@@ -208,8 +214,9 @@ class ForceSensor():
         self.offset, self.multiplier = configreader('offset', 'multiplier',category='calibration',file="Stepper/motorconfig.cfg")
         self.offset,self.multiplier = float(self.offset), float(self.multiplier)
     
-    def getreading(self):
+    def getreading(self, raw=False):
         if self.test:
+            
 
             import random
             return random.randint(0,50)
@@ -223,9 +230,8 @@ class ForceSensor():
             # values[i] = adc.read_adc(i, gain=GAIN, data_rate=128)
             # Each value will be a 12 or 16 bit signed integer value depending on the
             # ADC (ADS1015 = 12-bit, ADS1115 = 16-bit).
+        if raw:
+            return reading
         force =   (reading-self.offset)*self.multiplier
+        
         return force
-
-
-
-
