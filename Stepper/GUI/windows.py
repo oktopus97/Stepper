@@ -4,7 +4,7 @@ import sys,os
 sys.path.append(os.getcwd())
 from Stepper.tools import configwriter
 import wx
-from time import sleep
+from time import sleep, time
 import timeit
 
 from plot import Plotter
@@ -112,10 +112,7 @@ class ExperimentPanel(wx.Panel):
         
         self.vbox.Add(self.ctrl_toolbar,0,wx.ALL|wx.EXPAND,0)
         self.vbox.Add(self.plot,1,wx.ALL|wx.EXPAND,0)
-        self.test_button = wx.Button(self,-1,"Back")
-        self.test_button.Bind(wx.EVT_BUTTON,self.OnHome)
-        self.vbox.Add(self.test_button,0,wx.EXPAND,0)
-        self.test_button.Hide()
+        
         #event cls will be triggered with gui_q
         self.Bind(EVT_CLS,self.OnClose)
         self.Hide()
@@ -140,7 +137,6 @@ class ExperimentPanel(wx.Panel):
             else:
                 continue
     
-
     def start(self, test=False):
         if not test:
             self.worker_id = self.parent.management.work(function=self.parent.controller.start_experiment, args=(self,))
@@ -148,8 +144,8 @@ class ExperimentPanel(wx.Panel):
             self.callback = Thread(target=self.stop_callback, daemon = True)
             self.callback.start()
         else:
-            start_time = timeit.default_timer()
-            self.test_button.Show()
+            start_time = time()
+        self.plot.start_reading_thread(start_time)
         
         self.plot.plt.set_start(start_time)
         self.plot.timer.Start(plot_delay)
@@ -167,6 +163,7 @@ class ExperimentPanel(wx.Panel):
 
     def OnClose(self,e):
         self.plot.timer.Stop()
+        self.plot.join_plot()
         
 
         self.Hide()
@@ -178,7 +175,6 @@ class ExperimentPanel(wx.Panel):
         self.test_button.Hide()
         self.Hide()
         self.parent.Show()
-
 
 
 class ExperimentToolbar(wx.Panel):
@@ -207,11 +203,14 @@ class ExperimentToolbar(wx.Panel):
             self.parent.Hide()
             self.parent.plot.timer.Stop()
             self.parent.plot.plt.clear()
+            self.parent.plot.join_plot()
+            
             self.parent.parent.startpanel.Show()
+            self.parent.parent.startpanel.manual_panel.activate()
             return
         
         self.parent.parent.management.terminate(self.parent.worker_id)
-        self.parent.parent.controller.motor.backtozero(self.info_q.get()[0]*2)
+        self.parent.parent.controller.motor.backtozero()
         self.parent.OnClose(e)
 
 
@@ -225,7 +224,7 @@ class PlotPanel(wx.Panel):
 
         self.manager = manager
 
-        self.plt = Plotter(self, parent.parent.controller.force_sensor.getreading)
+        self.plt = Plotter(self, parent.parent.controller.force_sensor.getreading, controller.experiment.exp_str)
 
         self.sizer = wx.BoxSizer(wx.VERTICAL)
         self.sizer.Add(self.plt,0,wx.ALL|wx.EXPAND,0)
@@ -234,10 +233,13 @@ class PlotPanel(wx.Panel):
 
 
         self.SetSizerAndFit(self.sizer)
-
+    def start_reading_thread(self,start_time):
+        self.plt.reading=True
+        self.plot_thr = Thread(target=self.plt.read, args=(start_time,), daemon=True)
+        self.plot_thr.start()
     def join_plot(self):
-
-        self.plot_thread.join()
+        self.plt.reading = False
+        self.plot_thr.join()
 
     def end(self):
         parent.OnClose(None)
@@ -386,12 +388,16 @@ class FSCalibrate(wx.Dialog):
         self.fs =  self.parent.controller.force_sensor
         self.SetSizerAndFit(self.sizer)
         self.readfkt = self.fs.getreading
+        sleep(3)
+        self.zero = self.average_readings(20)
+        
 
         self.ShowModal()
 
     def OnGO(self,e):
+        sleep(3)
 
-        self.first = self.average_readings(20)
+        self.first = self.average_readings(50)
         
         self.text.SetLabel('Now put 100g and press the button')
         self.Layout()
@@ -399,16 +405,19 @@ class FSCalibrate(wx.Dialog):
         self.button.Bind(wx.EVT_BUTTON, self.OnSecondGo)
 
     def OnSecondGo(self,e):
-        self.second = self.average_readings(20)
+        sleep(3)
+        self.second = self.average_readings(50)
         self.calibrate()
         self.Destroy()
 
 
     def calibrate(self):
+        
 
-        difference = self.second - self.first
-        multiplier = 0.9807/(difference*2)
-        offset = self.first - difference
+        diff = self.second - self.first
+        
+        multiplier = 0.9807/(diff*2)
+        offset = self.zero
 
         configwriter('Stepper/motorconfig.cfg','calibration', ["multiplier", "offset"],multiplier, offset)
 

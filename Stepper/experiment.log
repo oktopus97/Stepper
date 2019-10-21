@@ -1,0 +1,7 @@
+2019-10-21 14:12:16,976 - root - INFO - -----INITIALIZING EXPERIMENT------
+2019-10-21 14:12:22,643 - root - INFO - -------INITIALIZING START FORCE---------
+2019-10-21 14:12:23,763 - root - INFO - -----STARTING CYCLE -----
+2019-10-21 14:12:23,764 - root - INFO - Amplitude 0.5, Frequency .1, Cycle Time 20, Waveform 0
+2019-10-21 14:12:44,026 - root - INFO - Cycle Duration 21
+2019-10-21 14:12:45,027 - root - INFO - ------CYCLE 1 FINISHED------
+2019-10-21 14:12:46,255 - root - INFO - ------EXPERIMENT ENDED------

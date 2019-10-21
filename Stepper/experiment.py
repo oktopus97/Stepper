@@ -5,6 +5,8 @@ from time import sleep, time
 from Stepper.tools import configreader, computeLinearDelay, get_sin_table
 import timeit
 import Stepper.motor
+import datetime
+from time import time
 
 """
 object Experiment :
@@ -36,9 +38,10 @@ object Experiment :
 
 class Experiment(object):
     def __init__(self,motor,force_sensor,exp_q,info_q,test=False):
+        
+        logging.basicConfig(filename='Stepper/experiment.log', filemode='w',
+                            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
         logging.info('-----INITIALIZING EXPERIMENT------')
-        logging.basicConfig(filename='experiment.log', filemode='w+',
-                            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         
         self.exp_q = exp_q
         self.info_q = info_q
@@ -48,7 +51,8 @@ class Experiment(object):
 
         #if set to True Gui can be run on a normal computer
         self.test=test
-
+    def exp_str(self):
+        return "experiment {}".format(datetime.datetime.now())
 
 
 
@@ -73,8 +77,9 @@ class Experiment(object):
         waveforms = waveforms[1:-1].split(",")
 
         cycle_count=0
-        starttime = timeit.default_timer()
+        starttime = time()
         
+        #put initial values in queues
         self.exp_q.put(starttime)
         self.info_q.put((1,))
         
@@ -90,9 +95,11 @@ class Experiment(object):
             #self.info_q.put((cycle_count,amplitude,frequency,waveform,cycletime))
             
 
-            logging.info('-----STARTING CYCLE {}-----'.format(cycle_count))
+            logging.info('-----STARTING CYCLE -----'.format(cycle_count,amplitude, frequency,
+                                                                        cycletime, waveform))
             
             for rep in range(int(rep)):
+                logging.info("Amplitude {}, Frequency {}, Cycle Time {}, Waveform {}".format(amplitude, frequency, cycletime, waveform))
                 
                 self.StartCycle(float(amplitude), float(frequency), int(cycletime), int(waveform), mode,startingforce, startingspeed,starttime)
 
@@ -104,9 +111,10 @@ class Experiment(object):
             
 
 
-        self.put()
+        self.EndCycle()
         
-    def put(self):
+    def end(self):
+        logging.info('------EXPERIMENT ENDED------')
         self.exp_q.put("EXPERIMENT END")
         
 
@@ -151,7 +159,7 @@ class Experiment(object):
 
             """
             self.motor.move_one_period(step_count,delay, mode, starttime)
-        print(int(time()) - start)
+        logging.info("Cycle Duration {}".format(int(time()) - start))
             
             
     
@@ -166,9 +174,11 @@ class Experiment(object):
     """
 
     def EndCycle(self):
-        
+        self.motor.backtozero()
+        self.end()
         if not self.test:
             self.motor.cleanGPIO()
+        
 
 
 

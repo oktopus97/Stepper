@@ -10,6 +10,7 @@ class ExperimentController(object):
         self.info_q = info_q
         self.force_sensor = ForceSensor(test)
         self.motor = Motor(self.force_sensor,test)
+        self.experiment = Experiment(self.motor, self.force_sensor,self.exp_q, self.info_q)
         
         """
         Controller commands:
@@ -19,7 +20,7 @@ class ExperimentController(object):
         """
     def start_experiment(self,panel):
         self.panel = panel
-        self.experiment = Experiment(self.motor, self.force_sensor,self.exp_q, self.info_q)
+        
         self.experiment.start(panel)
 
 

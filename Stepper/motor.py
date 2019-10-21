@@ -166,9 +166,14 @@ class Motor(object):
 
 
 
-    def backtozero(self, distance):
-        self.move_up_down(1, self.test, distance)
-
+    def backtozero(self, distance=0):
+        if distance != 0:
+            self.move_up_down(1, self.test, distance)
+        else:
+            while self.fs.getreading() > 0.1:
+                self.move_up_down(1,self.test)
+            #move 0.3 mm more to make sure that there's no force on the specimen
+            self.move_up_down(1,self.test,distance=0.3)
 
 
     ##open gpio ports
@@ -234,4 +239,4 @@ class ForceSensor():
             return reading
         force =   (reading-self.offset)*self.multiplier
         
-        return force
+        return round(force,2)
